@@ -36,6 +36,9 @@
       "expo-router",
       "expo-font"
     ],
+    "assetBundlePatterns": [
+      "assets/**/*"
+    ],
     "experiments": {
       "typedRoutes": true
     }

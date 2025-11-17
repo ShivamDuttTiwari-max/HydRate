@@ -6,7 +6,6 @@ import React, {
   useState,
 } from 'react';
 import {
-  AccessibilityActionEvent,
   AccessibilityInfo,
   Animated,
   Easing,
@@ -15,463 +14,248 @@ import {
   PanResponder,
   PanResponderGestureState,
   Platform,
-  Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
-import Svg, { Circle, G } from 'react-native-svg';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
-
-type TimerColorState = {
-  isActive: boolean;
-  isSnoozing: boolean;
-  isAdjusting: boolean;
-};
+import Svg, { Circle, G } from 'react-native-svg';
 
 type Props = {
-  initialMinutes?: number;
-  onMinutesChange?: (minutes: number) => void;
-  onToggle?: (isActive: boolean) => void;
-  onComplete?: () => void;
+  initialMinutes?: number; // 1..120
+  onMinutesChange?: (m: number) => void;
+  onToggle?: (active: boolean) => void;
   isSnoozing?: boolean;
+  // if your app manages running state externally, pass them in
   externalActive?: boolean;
 };
 
 const MIN = 1;
 const MAX = 120;
 const FULL_CIRCLE = 360;
-const HAPTIC_THROTTLE_MS = 200;
-const RING_PADDING = 18;
-const STROKE_WIDTH = 10;
-
-const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
 export default function CenterTimerClock({
   initialMinutes = 30,
   onMinutesChange,
   onToggle,
-  onComplete,
   isSnoozing = false,
   externalActive,
 }: Props) {
-  const clampedInitial = clamp(initialMinutes, MIN, MAX);
-  const [minutes, setMinutes] = useState<number>(clampedInitial);
-  const [layout, setLayout] = useState({ width: 0, height: 0 });
-  const [isAdjusting, setIsAdjusting] = useState(false);
+  // state
+  const [minutes, setMinutes] = useState<number>(clamp(initialMinutes, MIN, MAX));
   const [isActive, setIsActive] = useState<boolean>(!!externalActive);
-  const [remainingSeconds, setRemainingSeconds] = useState(
-    clampedInitial * 60,
-  );
-
-  const animatedProgress = useRef(
-    new Animated.Value((clampedInitial - MIN) / (MAX - MIN)),
-  ).current;
-  const rippleScale = useRef(new Animated.Value(1)).current;
-
-  const totalSecondsRef = useRef(clampedInitial * 60);
-  const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const progressAnimRef = useRef<Animated.CompositeAnimation | null>(null);
-  const rippleLoopRef = useRef<Animated.CompositeAnimation | null>(null);
-  const lastHapticTs = useRef(0);
-  const isMountedRef = useRef(true);
-  const isActiveRef = useRef(isActive);
+  const [layout, setLayout] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+  const adjustingRef = useRef(false);
 
   useEffect(() => {
-    return () => {
-      isMountedRef.current = false;
-      stopCountdown();
-      stopRipple();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (typeof externalActive === 'boolean') {
-      setIsActive(externalActive);
-    }
+    if (typeof externalActive === 'boolean') setIsActive(externalActive);
   }, [externalActive]);
 
-  useEffect(() => {
-    isActiveRef.current = isActive;
-    if (isActive) {
-      startRipple();
-    } else {
-      stopRipple();
-      stopCountdown();
-      animateToSelection(minutes);
-    }
-  }, [isActive, minutes]);
+  // Animated values
+  const animatedProgress = useRef(new Animated.Value((minutes - MIN) / (MAX - MIN))).current; // 0..1
+  const rippleScale = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    if (!isActive) {
-      totalSecondsRef.current = minutes * 60;
-      setRemainingSeconds(totalSecondsRef.current);
-    }
-  }, [minutes, isActive]);
+    animateProgress((minutes - MIN) / (MAX - MIN));
+  }, [minutes]);
 
   useEffect(() => {
-    const announcement = `Timer ${minutes} minutes. ${
-      isActive ? 'Running' : 'Idle'
-    }`;
-    AccessibilityInfo.announceForAccessibility?.(announcement);
-  }, [minutes, isActive]);
+    if (isActive) startRipple();
+    else stopRipple();
+  }, [isActive]);
 
-  const radius = useMemo(() => {
-    const size = Math.min(layout.width, layout.height);
-    return Math.max(size / 2 - RING_PADDING, 0);
-  }, [layout]);
-
-  const circumference = useMemo(() => {
-    const r = Math.max(radius - STROKE_WIDTH / 2, 0);
-    return 2 * Math.PI * r;
-  }, [radius]);
-
-  const handleLayout = useCallback((e: LayoutChangeEvent) => {
-    const { width, height } = e.nativeEvent.layout;
-    setLayout({ width, height });
-  }, []);
-
-  const announceMinutesChange = useCallback(
-    (value: number) => {
-      AccessibilityInfo.announceForAccessibility?.(
-        `Timer set to ${value} minutes`,
-      );
-    },
-    [],
-  );
+  // Prevent haptics flooding
+  const lastHapticTs = useRef<number>(0);
 
   const maybeHapticSelection = useCallback(() => {
     const now = Date.now();
-    if (now - lastHapticTs.current > HAPTIC_THROTTLE_MS) {
+    if (now - lastHapticTs.current > 80) {
       Haptics.selectionAsync();
       lastHapticTs.current = now;
     }
   }, []);
 
-  const coordsToAngle = useCallback(
-    (x: number, y: number) => {
-      const cx = layout.width / 2;
-      const cy = layout.height / 2;
-      const dx = x - cx;
-      const dy = y - cy;
-      const rad = Math.atan2(dy, dx);
-      const deg = (rad * 180) / Math.PI;
-      const degFromTop = (deg + 450) % 360; // shift so 0deg = top
-      return degFromTop;
-    },
-    [layout],
-  );
+  // sizing helpers
+  const radius = useMemo(() => Math.min(layout.width, layout.height) / 2 - 18, [layout]); // padding 18
+  const strokeWidth = 10;
+  const circumference = useMemo(() => 2 * Math.PI * Math.max(0, radius - strokeWidth / 2), [radius]);
 
-  const angleToMinutes = useCallback((angleDeg: number) => {
-    const normalized = ((angleDeg % FULL_CIRCLE) + FULL_CIRCLE) % FULL_CIRCLE;
+  function onLayout(e: LayoutChangeEvent) {
+    const { width, height } = e.nativeEvent.layout;
+    setLayout({ width, height });
+  }
+
+  // Convert angle to minutes (1..120). We map top (12 o'clock) = 0deg -> minute 1.
+  function angleToMinutes(angleDeg: number) {
+    // angleDeg expected 0..360, 0 at top, clockwise
+    const normalized = ((angleDeg % 360) + 360) % 360; // 0..360
+    // map 0..360 -> 0..(MAX - MIN)
     const value = Math.round((normalized / FULL_CIRCLE) * (MAX - MIN)) + MIN;
     return clamp(value, MIN, MAX);
-  }, []);
+  }
 
-  const updateMinutesFromTouch = useCallback(
-    (locationX: number, locationY: number) => {
-      if (!layout.width || !layout.height || isActiveRef.current) {
-        return;
-      }
-      const angle = coordsToAngle(locationX, locationY);
-      const nextMinutes = angleToMinutes(angle);
-      setMinutes((prev) => {
-        if (prev !== nextMinutes) {
-          maybeHapticSelection();
-          onMinutesChange?.(nextMinutes);
-          announceMinutesChange(nextMinutes);
-          animateToSelection(nextMinutes);
-        }
-        return nextMinutes;
-      });
-    },
-    [
-      angleToMinutes,
-      announceMinutesChange,
-      coordsToAngle,
-      layout.height,
-      layout.width,
-      maybeHapticSelection,
-      onMinutesChange,
-    ],
-  );
+  function minutesToAngle(mins: number) {
+    const ratio = (mins - MIN) / (MAX - MIN);
+    return ratio * FULL_CIRCLE; // 0..360
+  }
 
+  // get color helper matching your project's logic
+  function getTimerColor(localIsActive = isActive) {
+    if (isSnoozing) return '#F59E0B';
+    return localIsActive ? '#2563EB' : '#06B6D4';
+  }
+
+  // Animated helpers
+  function animateProgress(value: number) {
+    Animated.timing(animatedProgress, {
+      toValue: value,
+      duration: 160,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+  }
+
+  function startRipple() {
+    rippleScale.setValue(1);
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(rippleScale, { toValue: 1.06, duration: 1200, useNativeDriver: true }),
+        Animated.timing(rippleScale, { toValue: 1, duration: 1200, useNativeDriver: true }),
+      ])
+    ).start();
+  }
+
+  function stopRipple() {
+    rippleScale.stopAnimation();
+    Animated.timing(rippleScale, { toValue: 1, duration: 200, useNativeDriver: true }).start();
+  }
+
+  // Touch math: get angle in degrees from touch event relative to center
+  function coordsToAngle(pageX: number, pageY: number) {
+    // We need the absolute layout on screen to compute center: use measure? Simpler: component provides local coords via PanResponder (gestureState.x0 + dx) so we will use local coords below.
+    // This method expects coords relative to component's top-left.
+    const cx = layout.width / 2;
+    const cy = layout.height / 2;
+    const dx = pageX - cx;
+    const dy = pageY - cy;
+    // atan2 returns -PI..PI, with 0 at x+, so we convert so 0 at top.
+    const rad = Math.atan2(dy, dx); // 0 at right, positive down
+    const deg = (rad * 180) / Math.PI; // -180..180 where 0 = right
+    // Convert so 0 = top: subtract 90 degrees
+    const degFromTop = deg + 90;
+    const normalized = (degFromTop + 360) % 360; // 0..360 with 0 = top, clockwise positive
+    return normalized;
+  }
+
+  // We'll create a PanResponder that accepts touches inside a generous circle so taps are easy to hit.
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: (e: GestureResponderEvent) => {
-        if (isActiveRef.current) {
-          return false;
-        }
-        return e.nativeEvent.touches.length === 1;
+      onStartShouldSetPanResponder: (e: GestureResponderEvent) => true,
+      onMoveShouldSetPanResponder: (e: GestureResponderEvent, s: PanResponderGestureState) => true,
+      onPanResponderGrant: (e, s) => {
+        adjustingRef.current = true;
+        const { locationX, locationY } = e.nativeEvent;
+        // compute angle and minutes
+        const angle = coordsToAngle(locationX, locationY);
+        const m = angleToMinutes(angle);
+        setMinutes((prev) => {
+          if (prev !== m) {
+            maybeHapticSelection();
+            onMinutesChange?.(m);
+          }
+          return m;
+        });
       },
-      onMoveShouldSetPanResponder: (
-        _: GestureResponderEvent,
-        gestureState: PanResponderGestureState,
-      ) => {
-        if (isActiveRef.current || gestureState.numberActiveTouches > 1) {
-          return false;
-        }
-        return Math.abs(gestureState.dx) + Math.abs(gestureState.dy) > 2;
+      onPanResponderMove: (e, s) => {
+        const { locationX, locationY } = e.nativeEvent;
+        const angle = coordsToAngle(locationX, locationY);
+        const m = angleToMinutes(angle);
+        setMinutes((prev) => {
+          if (prev !== m) {
+            maybeHapticSelection();
+            onMinutesChange?.(m);
+          }
+          return m;
+        });
       },
-      onPanResponderGrant: (e: GestureResponderEvent) => {
-        if (isActiveRef.current) {
-          return;
-        }
-        setIsAdjusting(true);
-        updateMinutesFromTouch(e.nativeEvent.locationX, e.nativeEvent.locationY);
-      },
-      onPanResponderMove: (e: GestureResponderEvent) => {
-        if (isActiveRef.current) {
-          return;
-        }
-        updateMinutesFromTouch(e.nativeEvent.locationX, e.nativeEvent.locationY);
-      },
-      onPanResponderRelease: () => {
-        if (isActiveRef.current) {
-          return;
-        }
-        setIsAdjusting(false);
+      onPanResponderRelease: (e, s) => {
+        adjustingRef.current = false;
+        // small confirm haptic
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       },
       onPanResponderTerminationRequest: () => true,
       onPanResponderTerminate: () => {
-        setIsAdjusting(false);
+        adjustingRef.current = false;
       },
-    }),
+    })
   ).current;
 
-  const animateToSelection = useCallback(
-    (value: number) => {
-      const ratio = (value - MIN) / (MAX - MIN);
-      progressAnimRef.current?.stop();
-      progressAnimRef.current = Animated.timing(animatedProgress, {
-        toValue: ratio,
-        duration: 160,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: Platform.OS !== 'web',
-      });
-      progressAnimRef.current.start(() => {
-        progressAnimRef.current = null;
-      });
-    },
-    [animatedProgress],
-  );
-
-  const animateCountdown = useCallback(
-    (totalSeconds: number) => {
-      progressAnimRef.current?.stop();
-      animatedProgress.setValue(1);
-      progressAnimRef.current = Animated.timing(animatedProgress, {
-        toValue: 0,
-        duration: totalSeconds * 1000,
-        easing: Easing.linear,
-        useNativeDriver: Platform.OS !== 'web',
-      });
-      progressAnimRef.current.start(({ finished }) => {
-        if (finished && isMountedRef.current) {
-          handleComplete();
-        }
-      });
-    },
-    [animatedProgress],
-  );
-
-  const startCountdown = useCallback(
-    (totalSeconds: number) => {
-      totalSecondsRef.current = totalSeconds;
-      setRemainingSeconds(totalSeconds);
-      animateCountdown(totalSeconds);
-      countdownIntervalRef.current && clearInterval(countdownIntervalRef.current);
-      countdownIntervalRef.current = setInterval(() => {
-        setRemainingSeconds((prev) => {
-          const next = Math.max(prev - 1, 0);
-          return next;
-        });
-      }, 1000);
-    },
-    [animateCountdown],
-  );
-
-  const stopCountdown = useCallback(() => {
-    if (countdownIntervalRef.current) {
-      clearInterval(countdownIntervalRef.current);
-      countdownIntervalRef.current = null;
-    }
-    progressAnimRef.current?.stop();
-    progressAnimRef.current = null;
-  }, []);
-
-  const startRipple = useCallback(() => {
-    rippleLoopRef.current?.stop();
-    rippleScale.setValue(1);
-    rippleLoopRef.current = Animated.loop(
-      Animated.sequence([
-        Animated.timing(rippleScale, {
-          toValue: 1.08,
-          duration: 1200,
-          useNativeDriver: true,
-        }),
-        Animated.timing(rippleScale, {
-          toValue: 1,
-          duration: 1200,
-          useNativeDriver: true,
-        }),
-      ]),
-    );
-    rippleLoopRef.current.start();
-  }, [rippleScale]);
-
-  const stopRipple = useCallback(() => {
-    rippleLoopRef.current?.stop();
-    rippleLoopRef.current = null;
-    Animated.timing(rippleScale, {
-      toValue: 1,
-      duration: 220,
-      easing: Easing.out(Easing.quad),
-      useNativeDriver: true,
-    }).start();
-  }, [rippleScale]);
-
-  const handleComplete = useCallback(() => {
-    stopCountdown();
-    setIsActive(false);
-    setRemainingSeconds(minutes * 60);
-    onToggle?.(false);
-    onComplete?.();
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    animateToSelection(minutes);
-  }, [animateToSelection, minutes, onComplete, onToggle, stopCountdown]);
-
+  // Toggle start/stop when tapping center
   const handleToggle = useCallback(() => {
-    const shouldActivate = !isActive;
-    setIsActive(shouldActivate);
-    onToggle?.(shouldActivate);
-    if (shouldActivate) {
-      startCountdown(minutes * 60);
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    } else {
-      stopCountdown();
-      animateToSelection(minutes);
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    }
-  }, [
-    animateToSelection,
-    isActive,
-    minutes,
-    onToggle,
-    startCountdown,
-    stopCountdown,
-  ]);
+    const newActive = !isActive;
+    setIsActive(newActive);
+    onToggle?.(newActive);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+  }, [isActive, onToggle]);
 
-  const handleAccessibilityAction = useCallback(
-    (event: AccessibilityActionEvent) => {
-      if (event.nativeEvent.actionName === 'activate') {
-        handleToggle();
-        return;
-      }
-      if (event.nativeEvent.actionName === 'increment' && !isActive) {
-        const next = clamp(minutes + 1, MIN, MAX);
-        setMinutes(next);
-        onMinutesChange?.(next);
-        animateToSelection(next);
-      }
-      if (event.nativeEvent.actionName === 'decrement' && !isActive) {
-        const next = clamp(minutes - 1, MIN, MAX);
-        setMinutes(next);
-        onMinutesChange?.(next);
-        animateToSelection(next);
-      }
-    },
-    [animateToSelection, handleToggle, isActive, minutes, onMinutesChange],
-  );
+  // Accessibility announcement
+  useEffect(() => {
+    const label = `Timer ${minutes} minutes. ${isActive ? 'Running' : 'Not running'}`;
+    AccessibilityInfo.setAccessibilityFocus && AccessibilityInfo.announceForAccessibility(label);
+  }, [minutes, isActive]);
 
-  const displayedMinutes = isActive
-    ? Math.max(1, Math.ceil(remainingSeconds / 60))
-    : minutes;
-  const displayedLabel = isActive ? 'remaining' : 'minutes';
-  const timerColor = getTimerColor({
-    isActive,
-    isAdjusting,
-    isSnoozing: !!isSnoozing,
-  });
-
+  // SVG dashoffset binding
   const strokeDashoffset = animatedProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [circumference, 0],
   });
 
+  const currentColor = getTimerColor();
+
   return (
-    <View style={styles.container} onLayout={handleLayout}>
-      <Animated.View
-        pointerEvents="none"
-        style={[
-          styles.rippleWrapper,
-          {
-            transform: [{ scale: rippleScale }],
-            opacity: isActive ? 1 : 0.4,
-          },
-        ]}
-      >
-        <View
-          style={[
-            styles.ripple,
-            { borderColor: `${timerColor}33`, shadowColor: timerColor },
-          ]}
-        />
+    <View style={styles.container} onLayout={onLayout}>
+      <Animated.View style={[styles.rippleWrapper, { transform: [{ scale: rippleScale }] }]} pointerEvents="none">
+        <View style={[styles.ripple, { borderColor: 'rgba(37,99,235,0.3)' }]} />
       </Animated.View>
 
       <View style={styles.centerTouchArea} {...panResponder.panHandlers}>
         <LinearGradient
-          colors={[
-            'rgba(37,99,235,0.15)',
-            'rgba(6,182,212,0.12)',
-            'rgba(255,255,255,0.18)',
-          ]}
-          style={styles.centerGradient}
+          colors={['rgba(37, 99, 235, 0.15)', 'rgba(6, 182, 212, 0.1)', 'rgba(255, 255, 255, 0.2)']}
+          style={[styles.centerGradient]}
         >
-          <View style={styles.blurOverlay} />
-          <Pressable
-            onPress={handleToggle}
+          <View
+            accessible
             accessibilityRole="button"
-            accessibilityLabel={`Timer ${displayedMinutes} ${displayedLabel}`}
-            accessibilityState={{ busy: isActive, selected: isActive }}
-            focusable
-            accessibilityActions={[
-              { name: 'activate', label: 'Toggle timer' },
-              { name: 'increment', label: 'Increase minutes' },
-              { name: 'decrement', label: 'Decrease minutes' },
-            ]}
-            onAccessibilityAction={handleAccessibilityAction}
+            accessibilityLabel={`Timer ${minutes} minutes`}
+            accessibilityHint="Double tap to start or stop the timer"
             style={styles.svgWrapper}
           >
-            {radius > 0 && (
+            {radius > 0 ? (
               <Svg
-                width={radius * 2 + STROKE_WIDTH}
-                height={radius * 2 + STROKE_WIDTH}
-                viewBox={`0 0 ${radius * 2 + STROKE_WIDTH} ${
-                  radius * 2 + STROKE_WIDTH
-                }`}
+                width={radius * 2 + strokeWidth}
+                height={radius * 2 + strokeWidth}
+                viewBox={`0 0 ${radius * 2 + strokeWidth} ${radius * 2 + strokeWidth}`}
               >
-                <G
-                  rotation={-90}
-                  originX={(radius * 2 + STROKE_WIDTH) / 2}
-                  originY={(radius * 2 + STROKE_WIDTH) / 2}
-                >
+                <G rotation={-90} originX={(radius * 2 + strokeWidth) / 2} originY={(radius * 2 + strokeWidth) / 2}>
+                  {/* background ring */}
                   <Circle
-                    cx={(radius * 2 + STROKE_WIDTH) / 2}
-                    cy={(radius * 2 + STROKE_WIDTH) / 2}
-                    r={Math.max(0, radius - STROKE_WIDTH / 2)}
-                    stroke="rgba(255,255,255,0.12)"
-                    strokeWidth={STROKE_WIDTH}
+                    cx={(radius * 2 + strokeWidth) / 2}
+                    cy={(radius * 2 + strokeWidth) / 2}
+                    r={Math.max(0, radius - strokeWidth / 2)}
+                    stroke={'rgba(6,182,212,0.18)'}
+                    strokeWidth={strokeWidth}
+                    strokeLinecap="round"
                     fill="transparent"
                   />
+
+                  {/* progress ring -- Animated by strokeDashoffset */}
                   <AnimatedCircle
-                    cx={(radius * 2 + STROKE_WIDTH) / 2}
-                    cy={(radius * 2 + STROKE_WIDTH) / 2}
-                    r={Math.max(0, radius - STROKE_WIDTH / 2)}
-                    stroke={timerColor}
-                    strokeWidth={STROKE_WIDTH}
+                    cx={(radius * 2 + strokeWidth) / 2}
+                    cy={(radius * 2 + strokeWidth) / 2}
+                    r={Math.max(0, radius - strokeWidth / 2)}
+                    stroke={currentColor}
+                    strokeWidth={strokeWidth}
                     strokeLinecap="round"
                     fill="transparent"
                     strokeDasharray={`${circumference}, ${circumference}`}
@@ -479,42 +263,34 @@ export default function CenterTimerClock({
                   />
                 </G>
               </Svg>
-            )}
+            ) : null}
 
-            <View pointerEvents="none" style={styles.centerTextWrap}>
-              <Text style={[styles.minutesText, { color: timerColor }]}>
-                {displayedMinutes}
-              </Text>
-              <Text style={styles.labelText}>{displayedLabel}</Text>
+            <View style={styles.centerTextWrap} pointerEvents="none">
+              <Text style={[styles.minutesText, { color: currentColor }]}>{minutes}</Text>
+              <Text style={styles.labelText}>{minutes === 1 ? 'minute' : 'minutes'}</Text>
             </View>
-          </Pressable>
+          </View>
         </LinearGradient>
       </View>
     </View>
   );
 }
 
-function clamp(value: number, min: number, max: number) {
-  return Math.max(min, Math.min(value, max));
-}
+// Helper AnimatedCircle because react-native-svg's Circle doesn't accept Animated.Value directly for strokeDashoffset on some platforms
+const AnimatedCircle = Animated.createAnimatedComponent(Circle as any);
 
-function getTimerColor({
-  isActive,
-  isSnoozing,
-  isAdjusting,
-}: TimerColorState) {
-  if (isSnoozing) return '#F59E0B';
-  if (isActive) return '#2563EB';
-  if (isAdjusting) return '#0EA5E9';
-  return '#06B6D4';
+// Small utility functions
+function clamp(v: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, v));
 }
 
 const styles = StyleSheet.create({
   container: {
-    width: 320,
-    height: 320,
     alignItems: 'center',
     justifyContent: 'center',
+    // make this flexible — parent should size it. Provide a default size.
+    width: 320,
+    height: 320,
   },
   rippleWrapper: {
     position: 'absolute',
@@ -529,10 +305,9 @@ const styles = StyleSheet.create({
     height: 300,
     borderRadius: 150,
     borderWidth: 2,
-    shadowOpacity: 0.16,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 12,
+    shadowColor: '#0ea5e9',
+    shadowOpacity: 0.12,
+    shadowRadius: 20,
   },
   centerTouchArea: {
     width: 280,
@@ -548,11 +323,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-  },
-  blurOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderColor: 'rgba(255,255,255,0.08)'
   },
   svgWrapper: {
     width: 220,
@@ -566,16 +337,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   minutesText: {
-    fontSize: 46,
+    fontSize: 44,
     fontWeight: '700',
-    letterSpacing: 0.5,
   },
   labelText: {
-    marginTop: 2,
     fontSize: 14,
-    letterSpacing: 1,
-    color: 'rgba(15,23,42,0.55)',
-    textTransform: 'uppercase',
+    color: 'rgba(0,0,0,0.45)',
   },
 });
 
