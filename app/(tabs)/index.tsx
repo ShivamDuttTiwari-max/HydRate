@@ -69,7 +69,7 @@ export default function HydrateHome() {
           setStatusMessage('Web push registration failed. Check console for details.');
         }
       }
-    } else {
+      } else {
       setStatusMessage('Notifications are required for reminders. Enable them in Settings.');
     }
   }, [isWeb]);
@@ -131,7 +131,7 @@ export default function HydrateHome() {
 
   const PermissionCTA = () => {
     if (notifAllowed !== false) return null;
-    return (
+  return (
       <LinearGradient colors={['rgba(37,99,235,0.12)', 'rgba(6,182,212,0.12)']} style={styles.permissionCard}>
         <Text style={styles.permissionTitle}>{permissionCopy.title}</Text>
         <Text style={styles.permissionBody}>{permissionCopy.body}</Text>
@@ -147,8 +147,8 @@ export default function HydrateHome() {
           >
             <Text style={[styles.permissionButtonText, styles.secondaryButtonText]}>Open settings</Text>
           </Pressable>
-        </View>
-      </LinearGradient>
+            </View>
+                </LinearGradient>
     );
   };
 
@@ -167,39 +167,39 @@ export default function HydrateHome() {
               externalActive={isActive}
             />
             {!notifAllowed && <View pointerEvents="none" style={styles.disabledOverlay} />}
-          </View>
-
+                  </View>
+                  
           <PermissionCTA />
 
           <View style={styles.statusCard}>
             <Text style={styles.statusTitle}>Status</Text>
             <Text style={styles.statusMessage}>{statusMessage}</Text>
-
+                    
             {isActive && (
               <Text style={styles.statusDetail}>
                 Reminders repeat every {minutes} minute{minutes === 1 ? '' : 's'}. Turn them off any time by tapping the
                 clock.
-              </Text>
-            )}
-
+                        </Text>
+                    )}
+                    
             {isWeb && (
               <>
                 <Text style={styles.statusDetail}>{webLimitationsCopy}</Text>
                 {webSubscription && (
                   <Text style={styles.statusDetail}>
                     Web push subscription endpoint: {webSubscription.endpoint ?? 'ready'}.
-                  </Text>
-                )}
+                      </Text>
+                    )}
               </>
             )}
 
             <Text style={styles.statusDetail}>
               Custom sounds require an EAS build or `expo prebuild` so the WAV lands in Android `res/raw` and the iOS
               bundle. Expo Go uses default sounds.
-            </Text>
+                  </Text>
+            </View>
           </View>
-        </View>
-      </LinearGradient>
+              </LinearGradient>
     </SafeAreaView>
   );
 }

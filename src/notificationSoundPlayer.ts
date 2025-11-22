@@ -1,26 +1,8 @@
 export function setupSoundListener() {
-  if (typeof window === 'undefined' || !('navigator' in window)) {
+  if (typeof window === 'undefined' || !('navigator' in window) || !navigator.serviceWorker) {
     return;
   }
 
-  navigator.serviceWorker?.addEventListener('message', (event) => {
-    if (event.data?.type === 'play-notification-sound') {
-      playSound();
-    }
-  });
-}
-
-async function playSound() {
-  try {
-    const audio = new Audio('/sounds/water_reminder.wav');
-    audio.volume = 0.9;
-    await audio.play();
-  } catch (error) {
-    console.warn('Audio playback blocked by browser policy', error);
-  }
-}
-export function setupSoundListener() {
-  if (typeof navigator === 'undefined' || !navigator.serviceWorker) return;
   navigator.serviceWorker.addEventListener('message', (event) => {
     if (event.data?.type === 'play-notification-sound') {
       playBestEffortSound();
@@ -30,11 +12,18 @@ export function setupSoundListener() {
 
 export async function playBestEffortSound() {
   try {
+    // Try MP3 first (better browser support)
     const audio = new Audio('/sounds/water_reminder.mp3');
     audio.volume = 0.9;
-    await audio.play();
+    await audio.play().catch(async (mp3Error) => {
+      console.warn('MP3 playback failed, trying WAV...', mp3Error);
+      // Fallback to WAV if MP3 fails
+      const fallbackAudio = new Audio('/sounds/water_reminder.wav');
+      fallbackAudio.volume = 0.9;
+      await fallbackAudio.play();
+    });
   } catch (error) {
-    console.warn('Browser blocked notification audio playback.', error);
+    console.warn('All audio playback attempts failed.', error);
   }
 }
 

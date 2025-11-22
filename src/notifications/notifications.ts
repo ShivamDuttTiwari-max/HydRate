@@ -1,6 +1,5 @@
 import { Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
-import * as Permissions from 'expo-permissions';
 import * as Asset from 'expo-asset';
 import * as Application from 'expo-application';
 import * as FileSystem from 'expo-file-system';
@@ -25,13 +24,8 @@ type ScheduleReminderOptions = {
 };
 
 export async function ensureNotificationPermissions(): Promise<boolean> {
-  const legacy = await Permissions.getAsync(Permissions.NOTIFICATIONS);
-  if (legacy.status === 'granted') {
-    await ensureAndroidChannel();
-    return true;
-  }
-
   const { status: existingStatus } = await Notifications.getPermissionsAsync();
+  
   if (existingStatus === 'granted') {
     await ensureAndroidChannel();
     return true;
